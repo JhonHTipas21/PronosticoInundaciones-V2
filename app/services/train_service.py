@@ -28,6 +28,76 @@ from app.services.feature_service import build_features
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Pipeline de Limpieza Estricta
+# ─────────────────────────────────────────────────────────────────────
+
+def limpiar_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Pipeline de limpieza profunda para datos crudos de la API o CSV.
+
+    1. Conversión de fechas: pd.to_datetime, elimina NaT
+    2. Casteo numérico: convierte columnas clave a float
+    3. Interpolación temporal: rellena huecos ≤2 registros
+    4. Filtro IQR: elimina outliers estadísticos por estación
+    5. Elimina caudales negativos (físicamente imposibles)
+    """
+    df = df.copy()
+
+    # 1. Conversión de fechas
+    if 'fecha' in df.columns:
+        df['fecha'] = pd.to_datetime(df['fecha'], errors='coerce')
+        # Strip timezone para evitar filtros vacíos
+        if df['fecha'].dt.tz is not None:
+            df['fecha'] = df['fecha'].dt.tz_localize(None)
+        df = df.dropna(subset=['fecha']).sort_values('fecha')
+
+    # 2. Casteo numérico forzado
+    cols_num = ['lluvia_mm', 'temperatura_C', 'impermeabilidad_pct', 'caudal_m3s']
+    for col in cols_num:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    # 3. Interpolación temporal para huecos pequeños (≤2 registros)
+    if 'estacion' in df.columns and 'fecha' in df.columns:
+        frames = []
+        for est, grp in df.groupby('estacion'):
+            grp = grp.set_index('fecha').sort_index()
+            for col in cols_num:
+                if col in grp.columns:
+                    grp[col] = grp[col].interpolate(method='time', limit=2)
+            grp = grp.reset_index()
+            frames.append(grp)
+        df = pd.concat(frames, ignore_index=True)
+    else:
+        for col in cols_num:
+            if col in df.columns:
+                df[col] = df[col].interpolate(method='linear', limit=2)
+
+    # 4. Eliminar NaN restantes en columnas críticas
+    mandatory = [c for c in ['caudal_m3s', 'lluvia_mm'] if c in df.columns]
+    if mandatory:
+        df = df.dropna(subset=mandatory)
+
+    # 5. Eliminar caudales negativos (físicamente imposibles)
+    if 'caudal_m3s' in df.columns:
+        df = df[df['caudal_m3s'] >= 0].copy()
+
+    # 6. Filtro IQR por estación para eliminar outliers
+    if 'caudal_m3s' in df.columns and 'estacion' in df.columns:
+        frames_clean = []
+        for est, grp in df.groupby('estacion'):
+            Q1 = grp['caudal_m3s'].quantile(0.25)
+            Q3 = grp['caudal_m3s'].quantile(0.75)
+            IQR = Q3 - Q1
+            lower = max(0, Q1 - 1.5 * IQR)
+            upper = Q3 + 1.5 * IQR
+            grp_clean = grp[(grp['caudal_m3s'] >= lower) & (grp['caudal_m3s'] <= upper)]
+            frames_clean.append(grp_clean)
+        df = pd.concat(frames_clean, ignore_index=True)
+
+    return df.reset_index(drop=True)
+
+# ─────────────────────────────────────────────────────────────────────
 # Configuración de modelos y grillas de hiperparámetros
 # ─────────────────────────────────────────────────────────────────────
 
@@ -36,18 +106,19 @@ def _make_estimator(model_type: str):
     if model_type == "ridge":
         base = Ridge(random_state=0)
         grid = {
-            "reg__alpha": [0.1, 1.0, 10.0, 50.0],
+            # Incluye alphas muy pequeños para evitar sobre-regularización (aplastamiento)
+            "reg__alpha": [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0],
         }
     elif model_type == "lasso":
-        base = Lasso(max_iter=50, tol=0.1, random_state=0)
+        base = Lasso(max_iter=200, tol=0.01, random_state=0)
         grid = {
-            "reg__alpha": [0.01, 0.1, 0.5],
+            "reg__alpha": [0.0001, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5],
         }
     elif model_type == "elasticnet":
-        base = ElasticNet(max_iter=50, tol=0.1, random_state=0)
+        base = ElasticNet(max_iter=200, tol=0.01, random_state=0)
         grid = {
-            "reg__alpha": [0.01, 0.1],
-            "reg__l1_ratio": [0.5, 0.7],
+            "reg__alpha": [0.001, 0.01, 0.1],
+            "reg__l1_ratio": [0.3, 0.5, 0.7],
         }
     else:
         raise ValueError("model_type debe ser 'ridge', 'lasso' o 'elasticnet'")
@@ -116,6 +187,9 @@ def train_from_df(df: pd.DataFrame, horizon: int,
     Además de las métricas CV, calcula la desviación estándar de
     residuales por estación para cuantificación de incertidumbre.
     """
+    # Pipeline de limpieza estricta antes de entrenar
+    df = limpiar_dataframe(df)
+
     dfm, feats_num, feats_cat = build_features(df, horizon=horizon)
 
     X = dfm[feats_num + feats_cat].copy()
@@ -211,6 +285,10 @@ def train_from_df(df: pd.DataFrame, horizon: int,
         "residual_std_by_station": std_by_station,
         "residual_std_global": std_global,
     }
+
+    # Alerta de recalibración si R² < 0.80
+    if r2_cv < 0.80:
+        meta["alerta"] = "Modelo requiere recalibración de hiperparámetros"
     (out / "meta.json").write_text(
         json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
 

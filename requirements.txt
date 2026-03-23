@@ -1,4 +1,4 @@
-﻿fastapi
+fastapi
 uvicorn[standard]
 scikit-learn
 pandas
@@ -12,3 +12,5 @@ streamlit
 plotly
 requests
 shap
+matplotlib
+seaborn

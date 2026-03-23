@@ -1,0 +1,41 @@
+{
+  "estacion": "Rio Melendez",
+  "features_numeric": [
+    "lluvia_mm",
+    "temperatura_C",
+    "impermeabilidad_pct",
+    "api_4",
+    "api_8",
+    "api_20",
+    "rain_ma_4",
+    "rain_ma_8",
+    "rain_ema_8",
+    "temp_ma_4",
+    "temp_ma_8",
+    "lag_q_1",
+    "lag_q_2",
+    "lag_q_4",
+    "lag_q_8",
+    "lag_q_h",
+    "lag_rain_1",
+    "lag_rain_2",
+    "lag_rain_4",
+    "rain_x_imp",
+    "api4_x_imp",
+    "month_sin",
+    "month_cos",
+    "hour_sin",
+    "hour_cos",
+    "lluvia_mm__est_rio_melendez",
+    "api_4__est_rio_melendez",
+    "lag_q_1__est_rio_melendez"
+  ],
+  "features_categorical": [
+    "estacion"
+  ],
+  "r2_cv_mean": 0.31202560126368917,
+  "rmse_cv_mean": 0.7736269840696984,
+  "best_params": {
+    "regressor__reg__alpha": 30.0
+  }
+}

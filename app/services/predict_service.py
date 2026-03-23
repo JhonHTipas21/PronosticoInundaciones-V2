@@ -127,51 +127,42 @@ def make_recursive_forecast(model, meta: dict, df_historico: pd.DataFrame,
     """
     Genera un pronóstico recursivo a 48h en intervalos de 3h.
 
-    Cada paso:
-      1. Predice caudal con horizon=1 (6h) usando datos disponibles.
-      2. Agrega la predicción como nuevo registro.
-      3. Avanza 3h y repite.
-
-    Parameters
-    ----------
-    model : modelo entrenado
-    meta : metadata del modelo
-    df_historico : DataFrame con datos históricos (al menos 30 registros)
-    estacion : nombre de la estación
-    lluvia_mm : lluvia esperada por paso
-    temperatura_C : temperatura esperada
-    impermeabilidad_pct : % de impermeabilidad
-    caudal_previo : caudal de arranque si no hay datos
-    steps : número de pasos de 3h (16 = 48h)
-
-    Returns
-    -------
-    Dict con {historico, pronostico, q_max_canal_m3s}
+    Correcciones físicas:
+    - NUNCA rellena caudal con 0. Usa ffill().bfill() para el histórico.
+    - La predicción futura se retroalimenta autoregresivamente (seed = última medición).
+    - Si lluvia_mm ≈ 0, aplica decaimiento exponencial natural (curva de vaciado).
     """
     sigma = _get_sigma(estacion, meta)
     q_max = get_caudal_max(estacion)
 
-    # Preparar datos históricos
+    # ── Preparar datos históricos ──────────────────────────────────────
     if df_historico is not None and len(df_historico) > 0:
         df_hist = df_historico.copy()
         df_hist["fecha"] = pd.to_datetime(df_hist["fecha"])
         df_est = df_hist[df_hist["estacion"] == estacion].sort_values("fecha")
-
         if len(df_est) == 0:
             df_est = df_hist.sort_values("fecha")
 
         df_est = df_est.tail(30).copy()
+
+        # ▶ CORRECCIÓN CRÍTICA: ffill + bfill — NUNCA rellenar con cero
+        for col in ["caudal_m3s", "lluvia_mm", "temperatura_C", "impermeabilidad_pct"]:
+            if col in df_est.columns:
+                df_est[col] = df_est[col].ffill().bfill()
+
+        # Si aún quedan NaN en caudal (todo vacío), usar caudal_previo como seed
+        if df_est["caudal_m3s"].isna().all():
+            df_est["caudal_m3s"] = caudal_previo
+
         records = df_est.to_dict("records")
 
-        # Histórico: últimas 24h (8 registros de 3h ≈ 4 de 6h)
         historico = []
-        for _, row in df_est.tail(8).iterrows():
+        for _, row in df_est.tail(16).iterrows():  # últimas 48h (16×3h)
             historico.append({
                 "fecha": str(row["fecha"]),
-                "caudal_m3s": _safe_float(row.get("caudal_m3s", 0)),
+                "caudal_m3s": _safe_float(row.get("caudal_m3s", caudal_previo)),
             })
     else:
-        # Sin datos históricos: crear registros sintéticos
         now = pd.Timestamp.now()
         records = []
         for i in range(30):
@@ -185,18 +176,27 @@ def make_recursive_forecast(model, meta: dict, df_historico: pd.DataFrame,
                 "estacion": estacion,
             })
         records.reverse()
-        historico = [{
-            "fecha": str(records[-1]["fecha"]),
-            "caudal_m3s": caudal_previo,
-        }]
+        historico = [{"fecha": str(records[-1]["fecha"]), "caudal_m3s": caudal_previo}]
 
-    # Inferencia recursiva
+    # ── Caudal de arranque: último valor real no nulo ──────────────────
+    last_real_caudal = caudal_previo
+    for r in reversed(records):
+        v = r.get("caudal_m3s")
+        if v is not None and np.isfinite(float(v)) and float(v) > 0:
+            last_real_caudal = float(v)
+            break
+
+    # ── Inferencia recursiva ───────────────────────────────────────────
     pronostico = []
     last_date = pd.to_datetime(records[-1]["fecha"])
+    current_caudal = last_real_caudal  # seed autoregresivo
+
+    # Constante de decaimiento de caudal base (curva de vaciado de canal)
+    # τ ≈ 12h → k = 1 - exp(-3/12) ≈ 0.22 por paso de 3h
+    DECAY_K = 1 - np.exp(-3 / 12)
 
     for step in range(steps):
         try:
-            # Construir DataFrame para predicción
             req_records = []
             for r in records[-30:]:
                 rec = r.copy()
@@ -212,35 +212,40 @@ def make_recursive_forecast(model, meta: dict, df_historico: pd.DataFrame,
             dfm, fn, fc = build_features(df_pred, horizon=1)
             feats = meta["features_numeric"] + meta["features_categorical"]
 
+            # ▶ CORRECCIÓN: usar último valor conocido del dataframe, no 0.0
             for col in feats:
                 if col not in dfm.columns:
-                    dfm[col] = 0.0
+                    # Intentar recuperar de records si existe
+                    last_rec = records[-1] if records else {}
+                    dfm[col] = last_rec.get(col, current_caudal if col == "caudal_m3s" else 0.0)
 
             if len(dfm) == 0:
                 break
 
             yhat = model.predict(dfm[feats].tail(1))
-            yhat = np.where(np.isfinite(yhat), yhat, 0.0)
+            yhat = np.where(np.isfinite(yhat), yhat, current_caudal)
             pred_val = max(float(yhat[0]), 0.0)
 
-            # Clipping físico estricto (no se excede la capacidad del canal designada)
-            pred_val = min(pred_val, q_max)
+            # ▶ FÍSICO: Si lluvia ≈ 0, aplicar decaimiento exponencial sobre la predicción
+            # Esto evita que la curva de vaciado salte a 0 de forma abrupta
+            if lluvia_mm < 0.5:
+                # Mezcla ponderada: 70% decaimiento físico + 30% predicción del modelo
+                decayed = current_caudal * (1 - DECAY_K)
+                pred_val = 0.7 * decayed + 0.3 * pred_val
+                pred_val = max(pred_val, 0.01)  # Nunca colapsar a cero absoluto
 
-            # Avanzar 3h
+            pred_val = min(pred_val, q_max)
+            current_caudal = pred_val  # actualizar seed
+
             next_date = last_date + pd.Timedelta(hours=3)
             hora_adelanto = (step + 1) * 3
 
-            # Incertidumbre geométrica exacta basada en σ residual (95% CI)
-            lower = max(pred_val - (1.96 * sigma), 0.0)
-            upper = pred_val + (1.96 * sigma)
-            
-            # Clipping físico restrictivo a la cota del upper si rebasa el límite de alerta
-            upper = min(upper, q_max)
+            lower = max(pred_val - (1.96 * sigma), 0.01)
+            upper = min(pred_val + (1.96 * sigma), q_max)
 
-            # Limpiar NaN/Inf con np.nan_to_num
-            pred_val = float(np.nan_to_num(pred_val, nan=0.0, posinf=0.0, neginf=0.0))
-            lower = float(np.nan_to_num(lower, nan=0.0, posinf=0.0, neginf=0.0))
-            upper = float(np.nan_to_num(upper, nan=0.0, posinf=0.0, neginf=0.0))
+            pred_val = float(np.nan_to_num(pred_val, nan=last_real_caudal))
+            lower = float(np.nan_to_num(lower, nan=0.01))
+            upper = float(np.nan_to_num(upper, nan=pred_val))
 
             pronostico.append({
                 "fecha": next_date.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -250,7 +255,6 @@ def make_recursive_forecast(model, meta: dict, df_historico: pd.DataFrame,
                 "upper_95": _safe_float(upper),
             })
 
-            # Retroalimentar predicción como nuevo registro
             new_row = {
                 "fecha": next_date,
                 "lluvia_mm": lluvia_mm,

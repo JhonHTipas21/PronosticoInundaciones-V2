@@ -1,5 +1,6 @@
 # 🧠 Entornos virtuales
 venv/
+.venv/
 .env
 .env.*
 
@@ -23,24 +24,37 @@ pip-wheel-metadata/
 dist/
 build/
 
-# 🧪 Modelos y datasets grandes
-*.pkl
-*.joblib
-*.csv
-*.xlsx
-*.xls
+# 🧪 Archivos grandes genéricos
 *.zip
 *.tar.gz
+*.xlsx
+*.xls
 
-# 📊 Salidas del modelo
+# 📊 Salidas temporales
 app/data/processed/
-*.png
-*.json
-
-# 🧾 Archivos de logs
 *.log
-
-# 🚀 Archivos de informe temporales
 __temp__/
 temp/
 tmp/
+
+# ─────────────────────────────────────────────
+# 🟢 WHITELISTED: Archivos esenciales del proyecto
+# ─────────────────────────────────────────────
+
+# Incluir los datasets del proyecto (necesarios para reproducir)
+!app/data/dataset_historico_calibrado.csv
+!app/data/dataset_6h.csv
+!app/data/dataset_soda.csv
+
+# Incluir el modelo entrenado y su metadata
+!app/model/modelo_regresion.pkl
+!app/model/meta.json
+!app/model/ridge/**
+!app/model/lasso/**
+!app/model/per_estacion/**
+
+# Incluir archivos JSON de configuración
+!app/model/*.json
+
+# Gemini/IDE artifacts (no subir al repo)
+.gemini/

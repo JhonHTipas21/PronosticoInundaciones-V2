@@ -93,7 +93,7 @@ CUENCAS_CALI: Dict[str, CuencaInfo] = {
         cn=85, area_km2=4.2, pendiente_media=3.5,
         pct_impermeable=72.0, longitud_cauce_km=5.8,
         cobertura="urbana_alta_densidad",
-        lat=3.397, lon=-76.553, caudal_max_m3s=28.0,
+        lat=3.397, lon=-76.553, caudal_max_m3s=116.31,
         station_code="CALI002",
     ),
     "Canal Ciudad Jardin": CuencaInfo(
@@ -117,7 +117,7 @@ CUENCAS_CALI: Dict[str, CuencaInfo] = {
         cn=70, area_km2=8.7, pendiente_media=8.5,
         pct_impermeable=35.0, longitud_cauce_km=7.2,
         cobertura="periurbana_vegetal",
-        lat=3.385, lon=-76.550, caudal_max_m3s=18.0,
+        lat=3.385, lon=-76.550, caudal_max_m3s=239.37,
         station_code="CALI005",
     ),
     "Quebrada Pance (urbana)": CuencaInfo(
@@ -133,7 +133,7 @@ CUENCAS_CALI: Dict[str, CuencaInfo] = {
         cn=72, area_km2=17.8, pendiente_media=10.2,
         pct_impermeable=40.0, longitud_cauce_km=12.1,
         cobertura="mixta_montaña_urbana",
-        lat=3.380, lon=-76.560, caudal_max_m3s=40.0,
+        lat=3.380, lon=-76.560, caudal_max_m3s=254.43,
         station_code="CALI007",
     ),
 }
